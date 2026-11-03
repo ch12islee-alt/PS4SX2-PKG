@@ -2549,14 +2549,83 @@ void dyna_page_reset(u32 start, u32 sz)
 	mmap_MarkCountedRamPage(start);
 }
 
+// Exposed so the VM heartbeat can report which mode is live: -1 = not yet decided,
+// 0 = per-block checks (the port's historical behaviour), 1 = mprotect-protected pages.
+// Outside the PS4 guard on purpose: the heartbeat references it wherever the JIT is built.
+std::atomic<int> g_ps4_smc_write_protect_mode{-1};
+
+#if defined(PCSX2_PS4_VM_BOOT)
+#include <cstdio>
+#include <unistd.h>
+#include <sys/mman.h>
+
+// (AI-assisted) How self-modifying guest code is detected, and why this exists.
+//
+// As shipped, this port forces EVERY ram page down the manual path, so every recompiled block
+// carries a full instruction-by-instruction comparison against guest memory before it is allowed
+// to run. The recorded reason (see the comment in memory_protect_recompiled_code) was that the
+// manual prologue addressed host ram with a truncated 32-bit displacement. That prologue is now
+// PS4SMCCheck::Emit, which loads the source pointer with a 64-bit movabs and compares out of an
+// immutable per-block snapshot, so the workaround's premise no longer holds.
+//
+// vm-write-protect-smc restores upstream PCSX2's actual design: a code page is protected with
+// mprotect(), and the first write to it raises a fault which discards that page's compiled blocks
+// and demotes the page to manual checking. Pages a game never writes - the great majority - then
+// execute with no per-block check at all, while pages a game genuinely patches still get exact
+// validation. Both halves of that machinery already exist and are known to work here:
+// HostSys::MemProtect() calls mprotect(), and ps4/vm/PlatformVM.cpp decodes the Orbis ucontext to
+// dispatch page faults. They were simply never pointed at code pages.
+//
+// Opt-in while it is proven, and self-testing: if mprotect() is refused for guest ram the mode
+// switches itself off and the previous per-block behaviour returns unchanged.
+namespace PS4SMCProtection
+{
+	static bool UseWriteProtectedPages()
+	{
+		int mode = g_ps4_smc_write_protect_mode.load(std::memory_order_acquire);
+		if (mode >= 0)
+			return mode != 0;
+
+		bool enabled = access("/data/PS4SX2/vm-write-protect-smc", F_OK) == 0;
+		if (enabled && eeMem != nullptr)
+		{
+			// Round-trip the first guest ram page now, so a platform refusal shows up in the
+			// boot log instead of in the middle of a game.
+			u8* const probe = &eeMem->Main[0];
+			const int protect = mprotect(probe, __pagesize, PROT_READ);
+			const int restore = mprotect(probe, __pagesize, PROT_READ | PROT_WRITE);
+			enabled = (protect == 0 && restore == 0);
+		}
+		else
+		{
+			enabled = false;
+		}
+
+		std::printf("PS4 SMC: mprotect-protected code pages %s\n",
+			enabled ? "enabled - blocks invalidate on write faults" :
+					  "unavailable - mprotect refused for guest ram, keeping per-block checks");
+		std::fflush(stdout);
+
+		mode = enabled ? 1 : 0;
+		g_ps4_smc_write_protect_mode.store(mode, std::memory_order_release);
+		return enabled;
+	}
+} // namespace PS4SMCProtection
+#else
+namespace PS4SMCProtection
+{
+	// Hosted builds keep upstream's behaviour: pages are tracked with native protection.
+	static inline bool UseWriteProtectedPages() { return true; }
+} // namespace PS4SMCProtection
+#endif
+
 static void memory_protect_recompiled_code(u32 startpc, u32 size)
 {
-	// Orbis bring-up: the manual-protection prologue it emits addresses host
-	// RAM with a truncated 32-bit displacement (same disease as the vmap LEA),
-	// so every RAM block takes the discard path (or faults) and dies. The BIOS
-	// boot here is write-then-execute (no in-place SMC), so skip it for now.
-	// TODO: re-enable with a movabs-based prologue once boot is stable.
-	// eerec-231 smc: manual integrity checks only (see patch_smc.py).
+	// This function used to force every ram page onto the manual path, because the manual
+	// prologue of the time addressed host ram with a truncated 32-bit displacement. That
+	// prologue is now PS4SMCCheck::Emit, which uses a 64-bit movabs load, so pages can be
+	// tracked the way upstream intends - see PS4SMCProtection above, enabled by the
+	// vm-write-protect-smc marker.
 	u32 inpage_ptr = HWADDR(startpc);
 	const u32 inpage_sz = size * 4;
 
@@ -2565,7 +2634,13 @@ static void memory_protect_recompiled_code(u32 startpc, u32 size)
 	const bool contains_thread_stack = ((startpc >> 12) == 0x81) || ((startpc >> 12) == 0x80001);
 
 	// note: blocks are guaranteed to reside within the confines of a single page.
-	const vtlb_ProtectionMode PageType = (mmap_GetRamPageInfo(inpage_ptr) == ProtMode_NotRequired) ? ProtMode_NotRequired : ProtMode_Manual;
+	// (AI-assisted) With write-protected pages the page's real protection state is honoured, so
+	// an unwritten page runs unchecked and a written one is demoted to manual by the fault
+	// handler. Otherwise every page is treated as manual, as the port has always done.
+	const vtlb_ProtectionMode ram_page = mmap_GetRamPageInfo(inpage_ptr);
+	const vtlb_ProtectionMode PageType = PS4SMCProtection::UseWriteProtectedPages()
+		? ram_page
+		: ((ram_page == ProtMode_NotRequired) ? ProtMode_NotRequired : ProtMode_Manual);
 	(void)contains_thread_stack;
 
 	switch (PageType)
@@ -2581,7 +2656,12 @@ static void memory_protect_recompiled_code(u32 startpc, u32 size)
 
 		case ProtMode_Manual:
 #if defined(PCSX2_PS4_VM_BOOT)
-			if (!g_ps4_skip_smc_checks)
+			// A page only reaches manual protection because something wrote to it, so with
+			// write protection in charge these are exactly the blocks that must be validated.
+			// vm-skip-smc is allowed to skip the check for pages the port blanket-forced to
+			// manual, but never for a page the fault handler demoted - that skip is what
+			// crashes titles like Bully and GTA: San Andreas.
+			if (!g_ps4_skip_smc_checks || PS4SMCProtection::UseWriteProtectedPages())
 			{
 				xMOV(arg1regd, inpage_ptr);
 				xMOV(arg2regd, inpage_sz / 4);

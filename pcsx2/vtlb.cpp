@@ -1579,6 +1579,11 @@ vtlb_ProtectionMode mmap_GetRamPageInfo(u32 paddr)
 }
 
 // paddr - physically mapped PS2 address
+// (AI-assisted) Counted so the VM heartbeat can show whether write-protected code pages are
+// actually in use. Zero here means the vm-write-protect-smc path never engaged, which is the
+// difference between "the fix did not help" and "the fix did not run".
+std::atomic<u32> g_orbis_smc_protections{0};
+
 void mmap_MarkCountedRamPage(u32 paddr)
 {
 	pxAssert(eeMem);
@@ -1604,6 +1609,7 @@ void mmap_MarkCountedRamPage(u32 paddr)
 	m_PageProtectInfo[rampage].Mode = ProtMode_Write;
 	HostSys::MemProtect(&eeMem->Main[rampage << __pageshift], __pagesize, PageAccess_ReadOnly());
 	vtlb_UpdateFastmemProtection(rampage << __pageshift, __pagesize, PageAccess_ReadOnly());
+	g_orbis_smc_protections.fetch_add(1, std::memory_order_relaxed);
 }
 
 // offset - offset of address relative to psM.

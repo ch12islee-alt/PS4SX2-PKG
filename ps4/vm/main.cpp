@@ -64,6 +64,8 @@ static int s_log = -1;
 
 #if defined(PCSX2_PS4_VM_BOOT_JIT)
 extern std::atomic<u32> g_orbis_rec_compiles, g_orbis_rec_discards, g_orbis_rec_page_resets, g_orbis_rec_full_resets;
+extern std::atomic<u32> g_orbis_rec_faults, g_orbis_smc_protections;
+extern std::atomic<int> g_ps4_smc_write_protect_mode;
 extern bool g_ps4_vtlb_register_cache;
 extern bool g_ps4_vtlb_bulk_register_cache;
 extern bool g_ps4_skip_smc_checks;
@@ -356,6 +358,13 @@ void VMHostPoll()
 		ProbeLog("EE JIT cumulative: compiles=%u discards=%u page_resets=%u full_resets=%u\n",
 			g_orbis_rec_compiles.load(std::memory_order_relaxed), g_orbis_rec_discards.load(std::memory_order_relaxed),
 			g_orbis_rec_page_resets.load(std::memory_order_relaxed), g_orbis_rec_full_resets.load(std::memory_order_relaxed));
+		// (AI-assisted) Decisive for vm-write-protect-smc: protected_pages > 0 means code pages
+		// are really under mprotect, and write_faults > 0 means the fault handler is discarding
+		// blocks as intended. Both zero while mode says 1 would mean the scheme never engaged.
+		ProbeLog("SMC protection: mode=%d protected_pages=%u write_faults=%u\n",
+			g_ps4_smc_write_protect_mode.load(std::memory_order_relaxed),
+			g_orbis_smc_protections.load(std::memory_order_relaxed),
+			g_orbis_rec_faults.load(std::memory_order_relaxed));
 		ProbeLog("VTLB cached access sites compiled: quad_reads=%llu writes=%llu (not runtime calls)\n",
 			static_cast<unsigned long long>(g_ps4_vtlb_cached_quad_reads),
 			static_cast<unsigned long long>(g_ps4_vtlb_cached_writes));
