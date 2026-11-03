@@ -641,7 +641,22 @@ static void* RunVM(void*)
 	ProbeLog("CDVD timing: %s\n", fast_cdvd ? "accelerated by opt-in marker" : "normal (compatibility default)");
 	// (AI-assisted) Let the backend choose the compiled renderer; on this PS4 build that is Vulkan.
 	settings->SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(GSRendererType::VK));
-	settings->SetFloatValue("EmuCore/GS", "upscale_multiplier", 1.0f);
+	// (AI-assisted) Sharper, cleaner default image for EVERY PS2 title: 2x internal
+	// resolution plus anisotropic filtering, FXAA and maximum CAS sharpening. The GPU
+	// measures 1-2ms/frame against a 30-38ms CPU frame on this port, so resolution is
+	// close to free. 3x is deliberately NOT the default: the GS thread already reaches
+	// ~70% of a 16.68ms frame at 2x, and 3x needs ~2.25x the pixel work, which would
+	// push it past the budget and cap the frame rate.
+	// Restore the previous 1x baseline with /data/PS4SX2/vm-no-hd-defaults.
+	// Unimplemented options are ignored by the backend, so this is safe on older builds.
+	const bool hd_defaults = access("/data/PS4SX2/vm-no-hd-defaults", F_OK) != 0;
+	settings->SetFloatValue("EmuCore/GS", "upscale_multiplier", hd_defaults ? 2.0f : 1.0f);
+	settings->SetIntValue("EmuCore/GS", "MaxAnisotropy", hd_defaults ? 16 : 0);
+	settings->SetBoolValue("EmuCore/GS", "fxaa", hd_defaults);
+	settings->SetIntValue("EmuCore/GS", "filter", hd_defaults ? 1 : 2);
+	settings->SetIntValue("EmuCore/GS", "TriFilter", hd_defaults ? 2 : -1);
+	settings->SetIntValue("EmuCore/GS", "CASMode", hd_defaults ? 1 : 0);
+	settings->SetIntValue("EmuCore/GS", "CASSharpness", hd_defaults ? 100 : 0);
 	const bool disable_shader_cache = access("/data/PS4SX2/vm-no-shader-cache", F_OK) == 0;
 	settings->SetBoolValue("EmuCore/GS", "DisableShaderCache", disable_shader_cache);
 	settings->SetBoolValue("EmuCore/GS", "HWSpinGPUForReadbacks", false);
