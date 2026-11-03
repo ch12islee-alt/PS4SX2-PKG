@@ -648,16 +648,18 @@ static void* RunVM(void*)
 	ProbeLog("CDVD timing: %s\n", fast_cdvd ? "accelerated by opt-in marker" : "normal (compatibility default)");
 	// (AI-assisted) Let the backend choose the compiled renderer; on this PS4 build that is Vulkan.
 	settings->SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(GSRendererType::VK));
-	// (AI-assisted) Sharper, cleaner default image for EVERY PS2 title: 2x internal
-	// resolution plus anisotropic filtering, FXAA and maximum CAS sharpening. The GPU
+	// (AI-assisted) Sharper, cleaner default image for EVERY PS2 title: 3x internal
+	// resolution plus anisotropic filtering and maximum CAS sharpening. The GPU
 	// measures 1-2ms/frame against a 30-38ms CPU frame on this port, so resolution is
-	// close to free. 3x is deliberately NOT the default: the GS thread already reaches
-	// ~70% of a 16.68ms frame at 2x, and 3x needs ~2.25x the pixel work, which would
-	// push it past the budget and cap the frame rate.
+	// close to free.
+	// Resolution is performance-neutral on this hardware: 1x, 2x and 3x all measured identical
+	// frame times and identical game FPS, because the EE thread is the entire cost and the GS/GPU
+	// stay well inside budget. The earlier 2x cap came from a GS-budget argument that does not
+	// hold in practice, so take the free sharpness.
 	// Restore the previous 1x baseline with /data/PS4SX2/vm-no-hd-defaults.
 	// Unimplemented options are ignored by the backend, so this is safe on older builds.
 	const bool hd_defaults = access("/data/PS4SX2/vm-no-hd-defaults", F_OK) != 0;
-	settings->SetFloatValue("EmuCore/GS", "upscale_multiplier", hd_defaults ? 2.0f : 1.0f);
+	settings->SetFloatValue("EmuCore/GS", "upscale_multiplier", hd_defaults ? 3.0f : 1.0f);
 	settings->SetIntValue("EmuCore/GS", "MaxAnisotropy", hd_defaults ? 16 : 0);
 	// Texture filtering must match the PS2 or textures come out blurry. BiFiltering is
 	// {Nearest, Forced, PS2, Forced_But_Sprite} and TriFiltering is {Automatic=-1, Off, PS2, Forced},
