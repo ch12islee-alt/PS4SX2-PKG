@@ -696,7 +696,12 @@ static void* RunVM(void*)
 	// (AI-assisted) The Orbis Cubeb slot routes to native PS4 AudioOut.
 	const bool audio_enabled = access("/data/PS4SX2/vm-no-audio", F_OK) != 0;
 	settings->SetStringValue("SPU2/Output", "Backend", audio_enabled ? "Cubeb" : "Null");
-	settings->SetStringValue("SPU2/Output", "SyncMode", "TimeStretch");
+	// (AI-assisted) TimeStretch is the PCSX2 default, but AudioStream::BaseInitialize()
+	// sizes the queue 16x larger when it is enabled and the stretch path is a suspect in
+	// the VM-init crash. The menu intro sound does not use it and is known good on this
+	// console, so allow opting into that proven plain path without a rebuild.
+	const bool plain_audio = access("/data/PS4SX2/vm-audio-plain", F_OK) == 0;
+	settings->SetStringValue("SPU2/Output", "SyncMode", plain_audio ? "Disabled" : "TimeStretch");
 	// (AI-assisted) Longer sequences suit slowed audio and need fewer overlap
 	// searches. Leave enough queued audio for the resulting larger bursts.
 	// Needs proper testing with speech, transitions and pause on the console.
