@@ -605,16 +605,23 @@ static void* RunVM(void*)
 	Host::Internal::SetBaseSettingsLayer(settings);
 	Host::Internal::SetSecretsSettingsLayer(&secrets_storage);
 	VMManager::SetDefaultSettings(*settings, true, true, false, false, false);
-	// (AI-assisted) Fase 1: EE is 30-38ms bottleneck on Jaguar (Speed 48-55% in GTA/GoW FMV, GPU 1-2ms).
-	// Default to mild underclock (-1 = 75% cycles) for headroom; exact cycle accuracy costs ~25%
-	// EE time on this CPU. Original 100% stays via marker for sensitive titles. Needs proper testing.
-	int ee_cycle_rate = -1;
+	// Measured on this console with The Simpsons: Hit & Run (gameplay samples):
+	//   rate -2 (60%) -> 75.0% mean speed
+	//   rate -3 (50%) -> 87.8% mean speed, p90 100.0%, 44% of samples in 90-100%,
+	//                    13% at a locked 59.94 FPS
+	// The EE thread is still the wall (EE_ms ~24ms against the 16.68ms that 60 FPS needs), so the
+	// aggressive rate is now the default for EVERY title rather than an opt-in.
+	// Step back globally with vm-ee-cycle-60 (-2), vm-ee-cycle-mild (-1) or vm-ee-cycle-normal (0),
+	// or per game with an [EmuCore/Speedhacks] EECycleRate override in gamesettings/<SER>_<CRC>.ini.
+	// The former vm-ee-cycle-underclock marker is deliberately no longer read, so a leftover file
+	// from an older run cannot silently cap the rate at -2.
+	int ee_cycle_rate = -3;
 	if (access("/data/PS4SX2/vm-ee-cycle-normal", F_OK) == 0)
 		ee_cycle_rate = 0;
-	else if (access("/data/PS4SX2/vm-ee-cycle-underclock", F_OK) == 0)
-		ee_cycle_rate = -2;
 	else if (access("/data/PS4SX2/vm-ee-cycle-mild", F_OK) == 0)
 		ee_cycle_rate = -1;
+	else if (access("/data/PS4SX2/vm-ee-cycle-60", F_OK) == 0)
+		ee_cycle_rate = -2;
 	settings->SetIntValue("EmuCore/Speedhacks", "EECycleRate", ee_cycle_rate);
 	// (AI-assisted) Fase 3-A reverted: EECycleSkip=1 gave -1.2pp on GoW FMV (32.8ms vs 31.4ms) and no gain on GTA.
 	// Reverted to 0 (opt-in via /data/PS4SX2/vm-ee-cycle-skip only). Needs proper testing.
