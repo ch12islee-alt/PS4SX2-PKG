@@ -13,6 +13,7 @@
 #include <cstring>
 #include <mutex>
 #include <pthread.h>
+#include <unistd.h>
 #include <orbis/AudioOut.h>
 #include <orbis/Sysmodule.h>
 
@@ -34,6 +35,14 @@ namespace
 		std::atomic<u64> port_flags{0};
 	};
 	OutputCounters s_output;
+
+	// (AI-assisted) sceAudioOutGetPortState is the one audio SDK call the known-good menu
+	// intro path never makes, and port-state polling only feeds the LogStatus diagnostic
+	// counters -- playback does not need it. On console it aborts the process immediately
+	// after a successful sceAudioOutOpen, which is the "initializing virtual machine"
+	// crash, so keep it opt-in and out of the audio path by default.
+	static const bool s_poll_port_state =
+		access("/data/PS4SX2/vm-audio-portstate", F_OK) == 0;
 
 	class PS4AudioStream final : public AudioStream
 	{
@@ -113,12 +122,20 @@ namespace
 					return Fail("audio resampler creation", result ? result : -1, error);
 			}
 
+			// (AI-assisted) The log sink is asynchronous by default, so its buffered lines
+			// are lost when a hard crash aborts the process -- the console log simply stops
+			// after PCSX2's own "Creating ... audio stream" line, which makes the failing
+			// call unidentifiable. Announce each call before making it, so the last line
+			// written names the call that killed the process.
+			ProbeLog("PS4 audio: step 1/4 sceSysmoduleLoadModuleInternal(AUDIOOUT)\n");
 			const int module_result = sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_AUDIOOUT);
+			ProbeLog("PS4 audio: step 2/4 sceAudioOutInit\n");
 			const int init_result = sceAudioOutInit();
 			ProbeLog("PS4 audio: module=%#x init=%#x\n", module_result, init_result);
 			if (init_result < 0 && static_cast<u32>(init_result) != ORBIS_AUDIO_OUT_ERROR_ALREADY_INIT)
 				return Fail("sceAudioOutInit", init_result, error);
 
+			ProbeLog("PS4 audio: step 3/4 sceAudioOutOpen\n");
 			m_handle = sceAudioOutOpen(ORBIS_USER_SERVICE_USER_ID_SYSTEM, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN,
 				0, GRAIN, OUTPUT_RATE, ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
 			ProbeLog("PS4 audio: open=%#x input_rate=%u output_rate=%u resampler=%s channels=2 grain=%u format=s16_stereo stretch=%s buffer_ms=%u\n",
@@ -133,6 +150,7 @@ namespace
 				s_output.port_result.load(), s_output.port_output.load(), s_output.port_channels.load(),
 				s_output.port_volume.load(), static_cast<unsigned long long>(s_output.port_flags.load()));
 			int32_t levels[2] = {32768, 32768};
+			ProbeLog("PS4 audio: step 4/4 sceAudioOutSetVolume\n");
 			const int volume_result = sceAudioOutSetVolume(m_handle, 0x3, levels);
 			ProbeLog("PS4 audio: set_volume=%#x left=32768 right=32768 (0 dB)\n", volume_result);
 			if (volume_result < 0)
@@ -206,6 +224,13 @@ namespace
 
 		void RefreshPortState()
 		{
+			// Diagnostic only (see s_poll_port_state). Off by default: this is the call that
+			// aborts the process during VM init.
+			if (!s_poll_port_state)
+				return;
+			// A query on an unopened port is meaningless and the SDK does not validate it.
+			if (m_handle < 0)
+				return;
 			OrbisAudioOutPostState state{};
 			static_assert(sizeof(state) == 32);
 			const int result = sceAudioOutGetPortState(m_handle, &state);
