@@ -2604,7 +2604,9 @@ namespace PS4SMCProtection
 		std::printf("PS4 SMC: mprotect-protected code pages %s\n",
 			enabled ? "enabled - blocks invalidate on write faults" :
 					  "unavailable - mprotect refused for guest ram, keeping per-block checks");
-		std::fflush(stdout);
+		// fflush is #defined to a no-op in this translation unit (see the port's stdout
+		// buffering note above), so it is called bare rather than as std::fflush.
+		fflush(stdout);
 
 		mode = enabled ? 1 : 0;
 		g_ps4_smc_write_protect_mode.store(mode, std::memory_order_release);
@@ -2665,8 +2667,8 @@ static void memory_protect_recompiled_code(u32 startpc, u32 size)
 			{
 				xMOV(arg1regd, inpage_ptr);
 				xMOV(arg2regd, inpage_sz / 4);
-				// (AI-assisted) All RAM blocks use manual checks in this port. Compare
-				// up to eight instructions per branch, preserving every byte check.
+				// (AI-assisted) Exact comparison of the block against guest memory, from an
+				// immutable per-block snapshot, up to 32 bytes per vector compare.
 				PS4SMCCheck::Emit(reinterpret_cast<const u8*>(PSM(inpage_ptr)), inpage_sz, DispatchBlockDiscard);
 			}
 			break;
