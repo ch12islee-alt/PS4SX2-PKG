@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
+#include <cstdio>
 #include "Achievements.h"
 #include "BuildVersion.h"
 #include "CDVD/CDVD.h"
@@ -996,8 +997,94 @@ std::string VMManager::GetSerialForGameSettings()
 	return s_elf_override.empty() ? std::string(s_disc_serial) : std::string();
 }
 
+// (AI-assisted) Per-game SMC exemption.
+//
+// The global SMC relaxation (/data/PS4SX2/vm-skip-smc) is a large win on most titles, but the
+// Rockstar open-world games rewrite their own code constantly and then execute blocks compiled
+// before the rewrite. Both Bully and GTA San Andreas die this way, identically:
+//   Host Error [R5900 Exception]: Jump to unaligned address (PC: 0x926300b1)
+//   Host Error [R5900 Exception]: Jump to unmapped recLUT page (PC: 0xc7a11d90)
+//
+// Any serial listed in /data/PS4SX2/smc-exact.txt therefore falls back to exact per-block
+// validation for that game only, so a title can be exempted without rebuilding. The flag is read
+// when a block is compiled, and SMC-heavy blocks are discarded and recompiled every time the game
+// writes over them, so they pick up the exact path by themselves.
+extern bool g_ps4_skip_smc_checks;
+
+static bool ps4_serial_is_listed(const std::string& serial, const char* list_path)
+{
+	if (serial.empty())
+		return false;
+
+	std::FILE* fp = std::fopen(list_path, "rb");
+	if (fp == nullptr)
+		return false;
+
+	char line[128];
+	bool listed = false;
+	while (std::fgets(line, sizeof(line), fp) != nullptr)
+	{
+		const char* p = line;
+		while (*p == ' ' || *p == '	')
+			++p;
+		if (*p == '#' || *p == '\r' || *p == '\n' || *p == '\0')
+			continue;
+
+		std::string entry;
+		for (; *p != '\0' && *p != '\r' && *p != '\n' && *p != '#' && *p != ' ' && *p != '	'; ++p)
+			entry.push_back(*p);
+
+		if (entry.size() != serial.size())
+			continue;
+
+		bool same = true;
+		for (std::string::size_type i = 0; i < entry.size(); ++i)
+		{
+			char a = entry[i];
+			char b = serial[i];
+			if (a >= 'a' && a <= 'z')
+				a = static_cast<char>(a - 'a' + 'A');
+			if (b >= 'a' && b <= 'z')
+				b = static_cast<char>(b - 'a' + 'A');
+			if (a != b)
+			{
+				same = false;
+				break;
+			}
+		}
+		if (same)
+		{
+			listed = true;
+			break;
+		}
+	}
+
+	std::fclose(fp);
+	return listed;
+}
+
+static void ps4_apply_smc_exemption(const std::string& serial)
+{
+	if (!g_ps4_skip_smc_checks)
+		return;
+
+	if (ps4_serial_is_listed(serial, "/data/PS4SX2/smc-exact.txt"))
+	{
+		g_ps4_skip_smc_checks = false;
+		Console.WriteLn("(SMC) %s is listed in smc-exact.txt - using EXACT per-block SMC validation",
+			serial.c_str());
+	}
+	else
+	{
+		Console.WriteLn("(SMC) %s not exempted - relaxed SMC validation stays enabled",
+			serial.c_str());
+	}
+}
+
 bool VMManager::UpdateGameSettingsLayer()
 {
+	ps4_apply_smc_exemption(GetSerialForGameSettings());
+
 	std::unique_ptr<INISettingsInterface> new_interface;
 	if (s_disc_crc != 0)
 	{
