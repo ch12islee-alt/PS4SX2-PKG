@@ -298,6 +298,10 @@ FileMemoryCard::FileMemoryCard()
 
 FileMemoryCard::~FileMemoryCard() = default;
 
+// Defined below alongside Create(); declared here because Open() formats unformatted cards
+// and is defined earlier in the file.
+static bool WriteFormattedCardHeader(std::FILE* fp, u32 file_size);
+
 void FileMemoryCard::Open()
 {
 	for (int slot = 0; slot < 8; ++slot)
@@ -378,7 +382,7 @@ void FileMemoryCard::Open()
 			// manager UI to fix that afterwards. A game shown an unformatted card reports it
 			// as corrupt instead of offering to format it, so the card stayed unusable
 			// permanently. Done before the cache decision below so the card then loads normally.
-			if (!m_ispsx[slot] && m_fileSize[slot] >= MCD_SIZE &&
+			if (!m_ispsx[slot] && static_cast<u64>(m_fileSize[slot]) >= MCD_SIZE &&
 				!FileMcd_IsMemoryCardFormatted(m_file[slot]))
 			{
 				Console.WriteLn("(FileMcd) Slot %d: existing card is unformatted; writing a valid PS2 superblock.", slot);
