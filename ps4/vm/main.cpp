@@ -659,9 +659,16 @@ static void* RunVM(void*)
 	const bool hd_defaults = access("/data/PS4SX2/vm-no-hd-defaults", F_OK) != 0;
 	settings->SetFloatValue("EmuCore/GS", "upscale_multiplier", hd_defaults ? 2.0f : 1.0f);
 	settings->SetIntValue("EmuCore/GS", "MaxAnisotropy", hd_defaults ? 16 : 0);
-	settings->SetBoolValue("EmuCore/GS", "fxaa", hd_defaults);
-	settings->SetIntValue("EmuCore/GS", "filter", hd_defaults ? 1 : 2);
-	settings->SetIntValue("EmuCore/GS", "TriFilter", hd_defaults ? 2 : -1);
+	// Texture filtering must match the PS2 or textures come out blurry. BiFiltering is
+	// {Nearest, Forced, PS2, Forced_But_Sprite} and TriFiltering is {Automatic=-1, Off, PS2, Forced},
+	// so the old HD values of 1/2 selected the *Forced* modes for both - which overrode the PS2's own
+	// nearest filtering and blurred every texture in every game. The emulator warned about it:
+	//   [Unsafe Settings] texture filtering is not set to Bilinear (PS2). This will break rendering...
+	// Sharpness now comes from the 2x upscale and CAS instead of forced filtering.
+	// Per game these can still be overridden via [EmuCore/GS] in gamesettings/<SER>_<CRC>.ini.
+	settings->SetIntValue("EmuCore/GS", "filter", 2);     // Bilinear (PS2) - matches the console
+	settings->SetIntValue("EmuCore/GS", "TriFilter", -1); // Automatic - PS2-accurate trilinear
+	settings->SetBoolValue("EmuCore/GS", "fxaa", false);  // FXAA is blur-based AA; CAS already sharpens
 	settings->SetIntValue("EmuCore/GS", "CASMode", hd_defaults ? 1 : 0);
 	settings->SetIntValue("EmuCore/GS", "CASSharpness", hd_defaults ? 100 : 0);
 	const bool disable_shader_cache = access("/data/PS4SX2/vm-no-shader-cache", F_OK) == 0;
