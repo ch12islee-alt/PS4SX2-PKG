@@ -372,6 +372,22 @@ void FileMemoryCard::Open()
 			m_ispsx[slot] = m_fileSize[slot] == 0x20000;
 			m_chkaddr = 0x210;
 
+			// (Developer fix) Format an existing card that was never formatted. Cards created
+			// by older builds of this port were written entirely as 0xFF, which
+			// FileMcd_IsMemoryCardFormatted() rejects, and the console has no memory-card
+			// manager UI to fix that afterwards. A game shown an unformatted card reports it
+			// as corrupt instead of offering to format it, so the card stayed unusable
+			// permanently. Done before the cache decision below so the card then loads normally.
+			if (!m_ispsx[slot] && m_fileSize[slot] >= MCD_SIZE &&
+				!FileMcd_IsMemoryCardFormatted(m_file[slot]))
+			{
+				Console.WriteLn("(FileMcd) Slot %d: existing card is unformatted; writing a valid PS2 superblock.", slot);
+				if (WriteFormattedCardHeader(m_file[slot], static_cast<u32>(m_fileSize[slot])))
+					Console.WriteLn("(FileMcd) Slot %d: card formatted.", slot);
+				else
+					Console.Error("(FileMcd) Slot %d: could not format the existing card.", slot);
+			}
+
 			if (!m_ispsx[slot] && FileSystem::FSeek64(m_file[slot], m_chkaddr, SEEK_SET) == 0)
 			{
 				const size_t read_result = std::fread(&m_chksum[slot], sizeof(m_chksum[slot]), 1, m_file[slot]);
@@ -532,11 +548,78 @@ bool FileMemoryCard::Seek(std::FILE* f, u32 adr)
 	return (FileSystem::FSeek64(f, adr, SEEK_SET) == 0);
 }
 
+// (Developer fix) Writes a valid formatted PS2 memory-card superblock: logical page 0 plus its
+// 16 ECC bytes, at the start of an open card file. Card geometry follows
+// FolderMemoryCard::SetSizeInClusters(); the MEC and ECC regions are not derivable from the
+// format and were captured from a card this console formatted itself, then verified byte for
+// byte against that card. Returns false if the file is too small or a write fails.
+static bool WriteFormattedCardHeader(std::FILE* fp, u32 file_size)
+{
+	constexpr u32 page_size_raw = 512 + 16;
+	constexpr u32 cluster_size_raw = page_size_raw * 2;
+	const u32 clusters = file_size / cluster_size_raw;
+	if (clusters == 0)
+		return false;
+
+	u8 page[512];
+	std::memset(page, 0x00, sizeof(page));
+	std::memcpy(page + 0x00, "Sony PS2 Memory Card Format ", 28);
+	std::memcpy(page + 0x1C, "1.2.0.0", 7);
+
+	const auto put16 = [](u8* p, u16 v) {
+		p[0] = static_cast<u8>(v);
+		p[1] = static_cast<u8>(v >> 8);
+	};
+	const auto put32 = [](u8* p, u32 v) {
+		p[0] = static_cast<u8>(v);
+		p[1] = static_cast<u8>(v >> 8);
+		p[2] = static_cast<u8>(v >> 16);
+		p[3] = static_cast<u8>(v >> 24);
+	};
+
+	const u32 alloc_offset = clusters / 0x100 + 9;
+	const u32 blocks = clusters / 8;
+
+	put16(page + 0x28, 512);   // page size
+	put16(page + 0x2A, 2);     // pages per cluster
+	put16(page + 0x2C, 16);    // pages per block
+	put16(page + 0x2E, 0xFF00);
+	put32(page + 0x30, clusters);
+	put32(page + 0x34, alloc_offset);
+	put32(page + 0x38, clusters - 0x10 - alloc_offset);
+	put32(page + 0x3C, 0);     // root directory cluster
+	put32(page + 0x40, blocks - 1);
+	put32(page + 0x44, blocks - 2);
+	put32(page + 0x50, 8);
+	std::memset(page + 0xD0, 0xFF, 0x150 - 0xD0);
+
+	static const u8 mec[64] = {
+		0x02, 0x2b, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
+		0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x41, 0x1f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+		0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	};
+	std::memcpy(page + 0x150, mec, sizeof(mec));
+	std::memset(page + 0x190, 0xFF, 0x200 - 0x190);
+
+	static const u8 ecc[16] = {
+		0x07, 0x34, 0x4b, 0x77, 0x7f, 0x7f, 0x25, 0x71,
+		0x0e, 0x77, 0x7f, 0x7f, 0x00, 0x00, 0x00, 0x00,
+	};
+
+	if (FileSystem::FSeek64(fp, 0, SEEK_SET) != 0)
+		return false;
+	if (std::fwrite(page, sizeof(page), 1, fp) != 1)
+		return false;
+	if (std::fwrite(ecc, sizeof(ecc), 1, fp) != 1)
+		return false;
+	std::fflush(fp);
+	return true;
+}
+
 // returns FALSE if an error occurred (either permission denied or disk full)
 bool FileMemoryCard::Create(const char* mcdFile, uint sizeInMB)
 {
-	//int enc[16] = {0x77,0x7f,0x7f,0x77,0x7f,0x7f,0x77,0x7f,0x7f,0x77,0x7f,0x7f,0,0,0,0};
-
 	Console.WriteLn("(FileMcd) Creating new %uMB memory card: %s", sizeInMB, mcdFile);
 
 	auto fp = FileSystem::OpenManagedCFile(mcdFile, "wb");
@@ -551,6 +634,18 @@ bool FileMemoryCard::Create(const char* mcdFile, uint sizeInMB)
 		if (std::fwrite(buf, sizeof(buf), 1, fp.get()) != 1)
 			return false;
 	}
+
+	// (Developer fix) Lay a valid superblock over the erased body. The previous version left
+	// the whole card 0xFF, which FileMcd_IsMemoryCardFormatted() rejects, so every card this
+	// port created reported as UNFORMATTED and no memory-card manager UI exists here to fix
+	// it afterwards.
+	if (!WriteFormattedCardHeader(fp.get(), static_cast<u32>(MC2_MBSIZE) * sizeInMB))
+	{
+		Console.Error("(FileMcd) Created card could not be formatted: %s", mcdFile);
+		return false;
+	}
+
+	Console.WriteLn("(FileMcd) New %uMB memory card formatted.", sizeInMB);
 	return true;
 }
 
