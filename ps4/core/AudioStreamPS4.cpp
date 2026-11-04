@@ -261,7 +261,10 @@ namespace
 		void Run()
 		{
 			Threading::SetNameOfCurrentThread("PS4 AudioOut");
-			PS4ThreadAffinity::PinCurrentThread("Audio", 5);
+			// (AI-assisted) Swapped with VU1: audio is the lightest of the hot threads, so it
+			// shares the EE's cluster (core 2) instead of the VU1's, keeping the two memory-
+			// hungry emulation threads on separate L2 clusters. See MTVU.cpp for the reasoning.
+			PS4ThreadAffinity::PinCurrentThread("Audio", 3);
 			u64 buffers = 0, pcm_buffers = 0, input_short = 0, paused_buffers = 0;
 			u64 invalid_samples = 0, clipped_samples = 0;
 			u64 refill_pending = 0;

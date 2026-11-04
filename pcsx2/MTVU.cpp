@@ -251,7 +251,15 @@ void VU_Thread::ExecuteRingBuffer()
 #endif
 	Threading::SetNameOfCurrentThread("MTVU");
 #if defined(PCSX2_PS4_VM_BOOT)
-	PS4ThreadAffinity::PinCurrentThread("VU1", 3);
+	// (AI-assisted) Core placement. The PS4/Pro CPU is AMD Jaguar: two clusters of four
+	// cores, each cluster sharing its 2MB of L2. This thread ran on core 3, putting the EE
+	// (core 2) and VU1 in the SAME cluster - and under MTVU these are the two heaviest
+	// memory consumers in the emulator, so each was effectively getting half an L2 and
+	// contending for the same port. San Andreas in particular is a streaming workload where
+	// that showed. Cores 4 and 5 are in the other cluster, giving the EE a cluster shared
+	// only with the light audio thread. Placement was never validated by the original port
+	// ("Core placement needs proper testing across base/Pro consoles").
+	PS4ThreadAffinity::PinCurrentThread("VU1", 5);
 #endif
 
 	for (;;)

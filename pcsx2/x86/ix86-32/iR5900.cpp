@@ -2586,7 +2586,14 @@ namespace PS4SMCProtection
 		if (mode >= 0)
 			return mode != 0;
 
-		bool enabled = access("/data/PS4SX2/vm-write-protect-smc", F_OK) == 0;
+		// On by default as of this build. The write-protected path earned it on the console:
+		// Bully and San Andreas both ran a full session with the SMC relaxation enabled and no
+		// stale-block crash (_R5900 Exception: Jump to unaligned address), protecting ~300 code
+		// pages each while raising only 11-13 write faults per session - rare enough that the
+		// fault path costs nothing. The old behaviour forced every block through a full
+		// instruction comparison and is what crashed those titles when the check was skipped.
+		// vm-no-write-protect-smc restores it if a title ever needs the blanket path back.
+		bool enabled = access("/data/PS4SX2/vm-no-write-protect-smc", F_OK) != 0;
 		if (enabled && eeMem != nullptr)
 		{
 			// Round-trip the first guest ram page now, so a platform refusal shows up in the
